@@ -1,13 +1,59 @@
-# Ignore data and scripts folders
+# =========================
+# Data (DO NOT COMMIT)
+# =========================
 Data/
-scripts/
+data/
+*.parquet
+*.csv
+*.gpkg
+*.nc
+*.tif
+*.tiff
+*.feather
+*.rds
 
-# Ignore R and Python-related cache and history
-.Rhistory
-.RData
-.Rproj.user/
+# =========================
+# Python
+# =========================
 __pycache__/
-.ipynb_checkpoints/
+*.py[cod]
+*.so
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
 
-# Ignore system files
+# =========================
+# Jupyter / Quarto
+# =========================
+.ipynb_checkpoints/
+.quarto/
+*_cache/
+*_files/
+
+# =========================
+# Logs / temp
+# =========================
+*.log
+*.tmp
+*.swp
+
+# =========================
+# OS
+# =========================
 .DS_Store
+Thumbs.db
+
+# =========================
+# IDE
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# Credentials / secrets
+# =========================
+.env
+*.key
+*.pem

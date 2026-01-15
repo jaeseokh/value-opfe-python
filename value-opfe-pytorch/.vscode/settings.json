@@ -1,6 +1,0 @@
-{
-    "python.defaultInterpreterPath": "/opt/homebrew/Caskroom/miniconda/base/envs/pytorch-m1/bin/python",
-    "python.terminal.activateEnvironment": true,
-    "python.venvPath": ""
-  }
-  

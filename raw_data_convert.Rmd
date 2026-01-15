@@ -1,0 +1,233 @@
+---
+title: "Export OFPE RDS to GeoParquet/Parquet"
+format: html
+---
+
+```{r}
+# Load required libraries 
+suppressPackageStartupMessages({
+  library(sf)
+  library(dplyr)
+  library(stringr)
+  library(purrr)
+  library(arrow)
+})
+
+# Define directories
+root_dir <- here::here()  # project root
+raw_tb_dir   <- file.path(root_dir, "data", "exp_tb_data")
+raw_bdry_dir <- file.path(root_dir, "data", "exp_bdry_data")
+
+out_exp_gpkg_dir  <- file.path(root_dir, "data", "export", "gpkg", "exp")
+out_bdry_gpkg_dir <- file.path(root_dir, "data", "export", "gpkg", "bdry")
+out_exp_tab_dir   <- file.path(root_dir, "data", "export", "parquet", "exp")
+
+
+```
+
+# Helper functions
+```{r}
+
+# Set CRS to 4326
+st_set_4326 <- function(x) {
+  if (is.na(sf::st_crs(x))) {
+    x <- sf::st_set_crs(x, 4326)
+    message("CRS missing → set to EPSG:4326")
+  }
+  x
+}
+
+# Parse identifiers from filename
+
+parse_ffy_id <- function(fname) {
+  id <- str_remove(fname, "_tb\\.rds$")
+  parts <- str_split(id, "_", simplify = TRUE)
+
+  list(
+    ffy_id = id,
+    farm   = as.integer(parts[,1]),
+    field  = as.integer(parts[,2]),
+    year   = as.integer(parts[,3])
+  )
+}
+
+
+# Read experimental polygons (sf)
+
+read_exp_sf <- function(ffy_id) {
+tb_path <- file.path(raw_tb_dir, paste0(ffy_id, "_tb.rds"))
+stopifnot(file.exists(tb_path))
+
+exp_tb <- readRDS(tb_path)
+
+if ("geom" %in% names(exp_tb)) {
+geom <- exp_tb$geom
+exp_tb$geom <- NULL
+exp_sf <- sf::st_sf(exp_tb, geometry = geom)
+} else if ("geometry" %in% names(exp_tb) && inherits(exp_tb$geometry, "sfc")) {
+geom <- exp_tb$geometry
+exp_tb$geometry <- NULL
+exp_sf <- sf::st_sf(exp_tb, geometry = geom)
+} else {
+stop("No geometry column found in experimental table: ", ffy_id)
+}
+
+exp_sf <- st_set_4326(exp_sf)
+exp_sf
+}
+
+
+# Read boundary polygon (sf)
+
+read_boundary_sf <- function(ffy_id) {
+  bd_path <- file.path(raw_bdry_dir, paste0(ffy_id, "_bdry.rds"))
+  stopifnot(file.exists(bd_path))
+
+  bd <- readRDS(bd_path)
+  st_set_4326(bd)
+}
+
+# Standardize experimental data variable names
+
+standardize_exp_columns <- function(exp_sf, ffy_id) {
+
+  # ---- normalize names to lower case
+  names(exp_sf) <- tolower(names(exp_sf))
+
+  # ---- yield column (required)
+  yield_candidates <- c("yield", "grain_yield", "yield_bu", "yield_kg")
+  yield_col <- intersect(yield_candidates, names(exp_sf))
+
+  if (length(yield_col) == 0) {
+    stop("No yield column found for ", ffy_id)
+  }
+  yield_col <- yield_col[1]
+
+  # ---- n_rate column (required)
+  n_candidates <- c("n_rate", "nrate", "nitrogen", "n")
+  n_col <- intersect(n_candidates, names(exp_sf))
+
+  if (length(n_col) == 0) {
+    stop("No n_rate column found for ", ffy_id)
+  }
+  n_col <- n_col[1]
+
+  # ---- s_rate column (optional)
+  s_candidates <- c("s_rate", "seed_rate", "seeding_rate", "srate")
+  s_col <- intersect(s_candidates, names(exp_sf))
+
+  if (length(s_col) == 0) {
+    exp_sf$s_rate <- NA_real_
+  } else {
+    exp_sf$s_rate <- exp_sf[[s_col[1]]]
+  }
+
+  # ---- build standardized table
+  out <- exp_sf %>%
+    mutate(
+      yield  = as.numeric(.data[[yield_col]]),
+      n_rate = as.numeric(.data[[n_col]])
+    ) %>%
+    select(
+      obs_id,
+      yield,
+      n_rate,
+      s_rate,
+      geometry
+    )
+
+  out
+}
+
+
+```
+
+# Export each field-year from RDS(R) to GeoParquet(Python)
+```{r}
+# Identify all field–year IDs
+
+exclude_ffy_ids <- c(
+"15_1_2023","15_2_2023","15_3_2023", # out-of-state
+"27_1_2023", # bad geometry / incomplete
+"9_1_2022","9_2_2022" # problematic timing
+)
+
+tb_files_all <- list.files(raw_tb_dir, pattern = "_tb.rds$", full.names = FALSE)
+ffy_ids_all <- str_remove(tb_files_all, "_tb.rds$")
+
+ffy_ids <- setdiff(ffy_ids_all, exclude_ffy_ids)
+
+message("Total field-years found (raw): ", length(ffy_ids_all))
+message("Field-years after exclusion: ", length(ffy_ids))
+message("Excluded count: ", length(setdiff(ffy_ids_all, ffy_ids)))
+
+n_ok <- 0
+n_fail <- 0
+fail_ids <- character(0)
+
+for (i in seq_along(ffy_ids)) {
+
+  ffy_id <- ffy_ids[[i]]
+  meta <- parse_ffy_id(ffy_id)
+
+  message("[", i, "/", length(ffy_ids), "] exporting ", ffy_id)
+
+  exp_gpkg_path  <- file.path(out_exp_gpkg_dir,  paste0(ffy_id, "_exp.gpkg"))
+  bdry_gpkg_path <- file.path(out_bdry_gpkg_dir, paste0(ffy_id, "_bdry.gpkg"))
+  exp_tab_path   <- file.path(out_exp_tab_dir,   paste0(ffy_id, "_exp_table.parquet"))
+
+  ok <- tryCatch({
+
+    # --- experimental polygons (sf) ---
+    exp_raw <- read_exp_sf(ffy_id)
+    exp_sf  <- standardize_exp_columns(exp_raw, ffy_id) %>%
+      mutate(
+        ffy_id = meta$ffy_id,
+        farm   = meta$farm,
+        field  = meta$field,
+        year   = meta$year
+      )
+
+    # --- boundary (sf) ---
+    bd_sf <- read_boundary_sf(ffy_id) %>%
+      mutate(
+        ffy_id = meta$ffy_id,
+        farm   = meta$farm,
+        field  = meta$field,
+        year   = meta$year
+      )
+
+    # --- Write geometry safely (GeoPackage) ---
+    # Use layer name inside gpkg; overwrite layer each time
+    sf::st_write(exp_sf,  exp_gpkg_path, layer = "exp",  delete_dsn = TRUE, quiet = TRUE)
+    sf::st_write(bd_sf,   bdry_gpkg_path, layer = "bdry", delete_dsn = TRUE, quiet = TRUE)
+
+    # --- Write modeling table (no geometry) ---
+    exp_tab <- sf::st_drop_geometry(exp_sf)
+    arrow::write_parquet(exp_tab, exp_tab_path)
+
+    TRUE
+
+  }, error = function(e) {
+    message("  ❌ failed for ", ffy_id, " : ", conditionMessage(e))
+    FALSE
+  })
+
+  if (ok) {
+    n_ok <- n_ok + 1
+  } else {
+    n_fail <- n_fail + 1
+    fail_ids <- c(fail_ids, ffy_id)
+  }
+}
+
+message("Export complete.")
+message("  success: ", n_ok)
+message("  failed : ", n_fail)
+
+if (n_fail > 0) {
+  message("Failed ffy_ids:")
+  print(fail_ids)
+}
+
+```
