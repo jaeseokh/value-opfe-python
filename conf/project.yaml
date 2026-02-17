@@ -1,0 +1,25 @@
+project:
+  name: "chapter1_ofpe_shareability"
+  db_name: "ofpe_share"
+  database_url_env: "DATABASE_URL"
+
+  season:
+    start_month: 4
+    end_month: 10
+    heat_threshold_c: 30
+
+paths:
+  root: "."
+  outputs: "outputs"
+  figures: "outputs/figures"
+  tables: "outputs/tables"
+  logs: "outputs/logs"
+  models: "outputs/models"
+
+sql:
+  files:
+    - "sql/00_schema.sql"
+    - "sql/01_staging_views.sql"
+    - "sql/02_feature_views.sql"
+    - "sql/03_audit_views.sql"
+    - "sql/04_phase3_views.sql"

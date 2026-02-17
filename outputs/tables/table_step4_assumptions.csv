@@ -1,0 +1,4 @@
+assumption,required_condition,evidence,verdict
+Transferability,Mean |Delta EONR| <= 35-40 lbs/acre,mean |Delta EONR|=50.80,Violated
+Mechanism stability,Consistent interaction importance across holdouts,mean rank std=0.94,OK
+Covariate adequacy,Public covariates encode transferable dynamics,"derived from Transferability=Violated, Mechanism=OK",Violated

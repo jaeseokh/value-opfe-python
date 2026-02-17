@@ -1,13 +1,17 @@
+# src/etl/fetch_weather.py
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
+from src.io import read_one_field, ProjectPaths
+from src.utils import ensure_dir
+
 import pandas as pd
 import geopandas as gpd
 import pydaymet
 
-from .utils import get_logger
+from src.utils import get_logger
 
 
 @dataclass(frozen=True)
@@ -25,6 +29,9 @@ class WeatherConfig:
     # Climatology windows (years, inclusive)
     clim_5y: int = 5
     clim_30y: int = 30
+
+    # Phase control: climatology is expensive, keep OFF in Phase 1
+    compute_climatology: bool = False
 
     # Daymet region (na = North America)
     region: str = "na"
@@ -47,7 +54,7 @@ def _centroid_lonlat(boundary_gdf: gpd.GeoDataFrame) -> Tuple[float, float]:
 def _ensure_datetime(x: Optional[str | pd.Timestamp]) -> Optional[pd.Timestamp]:
     if x is None or (isinstance(x, float) and pd.isna(x)):
         return None
-    ts = pd.to_datetime(x)
+    ts = pd.to_datetime(x, errors="coerce")
     if pd.isna(ts):
         return None
     return ts
@@ -90,7 +97,11 @@ def fetch_daymet_daily_point(
     """
     logger = get_logger()
     logger.info(
-        f"Downloading Daymet daily at (lon={lon:.6f}, lat={lat:.6f}) dates=({start_date}, {end_date})"
+        "Downloading Daymet daily at (lon=%.6f, lat=%.6f) dates=(%s, %s)",
+        lon,
+        lat,
+        start_date,
+        end_date,
     )
 
     df = pydaymet.get_bycoords(
@@ -127,7 +138,7 @@ def fetch_daymet_daily_point(
                         f"Columns={list(df.columns)}"
                     )
 
-    df["date"] = pd.to_datetime(df["date"])
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
     # ---- Normalize variable names (handle units like 'prcp (mm/day)') ----
     df.columns = [c.strip().lower() for c in df.columns]
@@ -183,7 +194,7 @@ def compute_weather_features(
     cfg: WeatherConfig,
 ) -> Dict[str, float | str]:
     """
-    Compute a readable subset of  R features.
+    Compute a readable subset of features.
 
     Outputs:
       - seasonal totals (Apr–Sep if cfg.apr_to_sep_only)
@@ -225,7 +236,7 @@ def compute_weather_features(
     out["max_dry_spell_N_to_yield"] = float(_dry_spell_max(seg_ny["prcp"], cfg.dry_day_mm))
     out["heavy_rain_days_N_to_yield"] = float((seg_ny["prcp"] >= cfg.heavy_rain_mm).sum())
 
-    # Stage windows (simple version similar to R logic)
+    # Stage windows (simple version)
     s1_end = s_time + pd.Timedelta(days=14)
     s2_end = n_time - pd.Timedelta(days=1)
     s3_end = n_time + pd.Timedelta(days=14)
@@ -250,8 +261,6 @@ def compute_weather_features(
 
     out["days_to_N_app"] = float((n_time - s_time).days)
     out["precip_15_post_N"] = float(stages["S3"]["prcp"].sum(skipna=True))
-
-    # Label similar to R note
     out["n_app_stage"] = "S1" if n_time <= s1_end else "S3_or_S4"
 
     return out
@@ -266,8 +275,7 @@ def compute_climatology_means(
     """
     Compute 5y / 30y mean of daily prcp/gdd/edd over Apr–Sep (if cfg.apr_to_sep_only).
 
-    Note: This is an expensive call (downloads multi-year daily series twice).
-    We will cache later.
+    NOTE: expensive. Keep OFF in Phase 1 unless you add caching.
     """
     logger = get_logger()
 
@@ -297,7 +305,7 @@ def compute_climatology_means(
 def build_weather_features_for_ffy(
     ffy_id: str,
     boundary_gdf: gpd.GeoDataFrame,
-    date_row: Dict[str, str],
+    date_row: Dict[str, Optional[str]],
     cfg: WeatherConfig = WeatherConfig(),
 ) -> pd.DataFrame:
     """
@@ -321,11 +329,131 @@ def build_weather_features_for_ffy(
     y_time = _ensure_datetime(date_row.get("yield_time"))
 
     feats = compute_weather_features(daily, s_time, n_time, y_time, cfg)
-    clim = compute_climatology_means(lon, lat, year, cfg)
 
     row: Dict[str, float | str] = {"ffy_id": ffy_id, "lon": lon, "lat": lat}
     row.update(feats)
-    row.update(clim)
 
-    logger.info(f"Weather features built for {ffy_id}")
+    if cfg.compute_climatology:
+        clim = compute_climatology_means(lon, lat, year, cfg)
+        row.update(clim)
+
+    logger.info("Weather features built for %s", ffy_id)
     return pd.DataFrame([row])
+
+
+def _first_nonnull_from_exp(exp_df: pd.DataFrame, col: str) -> Optional[str]:
+    if col not in exp_df.columns:
+        return None
+    s = exp_df[col].dropna()
+    if len(s) == 0:
+        return None
+    return str(s.iloc[0])
+
+
+def _run_one_field_impl(
+    *,
+    ffy_id: str,
+    paths,
+    cfg: WeatherConfig,
+    out_dir,
+    logger,
+    overwrite: bool,
+) -> None:
+    from src.io import read_one_field  # <-- ADD THIS LINE (local import)
+
+    out_path = out_dir / f"{ffy_id}_weather_table.parquet"
+
+    if out_path.exists() and (not overwrite):
+        logger.info("[SKIP] Weather exists: %s", out_path)
+        return
+
+    exp_gdf, bdry_gdf, exp_df = read_one_field(paths, ffy_id)
+
+    date_row: Dict[str, Optional[str]] = {
+        "s_time": _first_nonnull_from_exp(exp_df, "s_time"),
+        "n_time": _first_nonnull_from_exp(exp_df, "n_time"),
+        "yield_time": _first_nonnull_from_exp(exp_df, "yield_time"),
+    }
+
+    df = build_weather_features_for_ffy(
+        ffy_id=ffy_id,
+        boundary_gdf=bdry_gdf,
+        date_row=date_row,
+        cfg=cfg,
+    )
+
+    df.to_parquet(out_path, index=False)
+    logger.info("[OK] Weather saved: %s", out_path)
+
+
+def run_one_field(ffy_id: str, *, overwrite: bool = False) -> None:
+    """
+    Convenience runner for a single ffy_id (for debugging / smoke tests).
+    """
+    from pathlib import Path
+    from src.io import ProjectPaths, read_one_field  # ensure in scope
+    from src.utils import ensure_dir
+
+    logger = get_logger()
+    paths = ProjectPaths(Path("."))
+
+    out_dir = paths.parquet_enriched_weather_dir
+    ensure_dir(out_dir)
+
+    cfg = WeatherConfig()
+    _run_one_field_impl(
+        ffy_id=ffy_id,
+        paths=paths,
+        cfg=cfg,
+        out_dir=out_dir,
+        logger=logger,
+        overwrite=overwrite,
+    )
+
+
+def run_all_fields(*, overwrite: bool = False) -> None:
+    """
+    Pipeline entrypoint: build weather features for every ffy_id found.
+    Writes parquet outputs into .../enriched_weather.
+
+    - idempotent (skip if output exists unless overwrite=True)
+    - climatology off by default
+    - tolerant of missing event date columns
+    """
+    from pathlib import Path
+
+    from src.io import ProjectPaths, list_ffy_ids, read_one_field
+    from src.utils import ensure_dir
+
+    logger = get_logger()
+    paths = ProjectPaths(Path("."))
+
+    out_dir = paths.parquet_enriched_weather_dir
+    ensure_dir(out_dir)
+
+    ffy_ids = list_ffy_ids(paths)
+    logger.info("Weather: found %d ffy_ids", len(ffy_ids))
+
+    cfg = WeatherConfig()
+
+    ok = 0
+    fail = 0
+    for ffy_id in ffy_ids:
+        try:
+            _run_one_field_impl(
+                ffy_id=ffy_id,
+                paths=paths,
+                cfg=cfg,
+                out_dir=out_dir,
+                logger=logger,
+                overwrite=overwrite,
+            )
+            ok += 1
+        except Exception as e:
+            fail += 1
+            logger.exception("[FAIL] Weather for %s: %s", ffy_id, e)
+            # IMPORTANT: don’t kill whole pipeline by default
+            # If you want “fail-fast”, replace `continue` with `raise`
+            continue
+
+    logger.info("Weather finished. ok=%d fail=%d", ok, fail)

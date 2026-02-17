@@ -1,0 +1,45 @@
+stages:
+  init:
+    - name: "ensure_outputs_dirs"
+      type: "python"
+      entry: "src.logging_utils:ensure_output_dirs"
+
+  etl_public:
+    - name: "fetch_weather"
+      type: "python"
+      entry: "src.etl.fetch_weather:run_all_fields"
+    - name: "fetch_ssurgo"
+      type: "python"
+      entry: "src.etl.fetch_ssurgo:run_all_fields"
+    - name: "fetch_topo"
+      type: "python"
+      entry: "src.etl.fetch_topo:run_all_fields"
+
+  etl_private:
+    - name: "build_model_ready"
+      type: "python"
+      entry: "src.etl.load_private_ofpe:run"
+
+  db_load:
+    - name: "load_parquet_to_postgres"
+      type: "python"
+      entry: "src.sqlops.load_parquet:run"
+
+  sql_build:
+    - name: "apply_sql"
+      type: "python"
+      entry: "src.sqlops.apply_sql:run"
+
+aliases:
+  phase1:
+    - init
+    - etl_public
+    - etl_private
+    - db_load
+    - sql_build
+
+  sql:
+    - sql_build
+
+  load:
+    - db_load

@@ -1,0 +1,2 @@
+n_holdouts,mean_abs_delta_eonr,median_abs_delta_eonr,p90_abs_delta_eonr,mean_loss_$per_acre_proxy,share_abs_delta_ge35,share_abs_delta_ge40
+20,50.79602363890278,38.944399537426726,121.27938718641826,38.223035132963936,0.55,0.5

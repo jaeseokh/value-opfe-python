@@ -1,10 +1,7 @@
-# =========================
-# Data (DO NOT COMMIT)
-# =========================
+# Private data and heavy artifacts (do not publish)
 Data/
 data/
 *.parquet
-*.csv
 *.gpkg
 *.nc
 *.tif
@@ -12,9 +9,24 @@ data/
 *.feather
 *.rds
 
-# =========================
+# Keep CSV private by default, except explicit public tables below
+*.csv
+
+# Public results we do want to share
+!outputs/
+outputs/*
+!outputs/figures/
+!outputs/tables/
+outputs/figures/*
+outputs/tables/*
+!outputs/figures/*.png
+!outputs/figures/*.jpg
+!outputs/figures/*.jpeg
+!outputs/figures/*.svg
+!outputs/tables/*.csv
+!outputs/tables/*.md
+
 # Python
-# =========================
 __pycache__/
 *.py[cod]
 *.so
@@ -24,36 +36,30 @@ __pycache__/
 venv/
 env/
 
-# =========================
 # Jupyter / Quarto
-# =========================
 .ipynb_checkpoints/
 .quarto/
 *_cache/
 *_files/
 
-# =========================
 # Logs / temp
-# =========================
 *.log
 *.tmp
 *.swp
+.Rhistory
 
-# =========================
-# OS
-# =========================
+# OS / IDE
 .DS_Store
 Thumbs.db
-
-# =========================
-# IDE
-# =========================
 .vscode/
 .idea/
 
-# =========================
+# Misc local bundles
+*.zip
+scripts/archieve/
+src/src.zip
+
 # Credentials / secrets
-# =========================
 .env
 *.key
 *.pem

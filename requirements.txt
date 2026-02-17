@@ -1,0 +1,28 @@
+# Core
+numpy
+pandas
+pyyaml
+pyarrow
+tqdm
+requests
+
+# SQL (optional)
+psycopg2-binary
+
+# Modeling
+scikit-learn
+xgboost
+pygam
+scipy>=1.11.1,<1.17
+
+# Geo stack
+geopandas
+shapely
+pyproj
+rasterio
+rioxarray
+xarray
+pydaymet
+rasterstats
+py3dep
+boto3   # optional: enables rasterio S3 sessions
